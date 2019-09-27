@@ -8,6 +8,7 @@ import traceback
 import sys
 import abc
 import shutil
+import re
 
 from zipfile import ZipFile
 
@@ -73,7 +74,7 @@ class BaseTool(object):
 
         except:
             tb_info = traceback.format_exc()
-            error_message = tb_info + "\n" + str(sys.exc_type) + ": " + str(sys.exc_value)
+            error_message = tb_info
             arcpy.AddError("arcpy messages: " + error_message)
 
             return False
@@ -248,6 +249,8 @@ class UpdateAttachmentsZipTool(BaseTool):
         """Define parameter definitions"""
         param_zip_input = arcpy.Parameter(displayName="Zipped Folder", name="zip_input", datatype="DEFile",
                                           parameterType="Required", direction="Input")
+        param_map_name = arcpy.Parameter(displayName="Map Name", name="map_name",
+                                                    datatype="GPString", parameterType="Required", direction="Input")
         param_attachment_id_field = arcpy.Parameter(displayName="Attachment ID Field", name="attachment_id_field",
                                                     datatype="GPString", parameterType="Required", direction="Input")
         param_template_mxd = arcpy.Parameter(displayName="Template Map Document", name="template_mxd",
@@ -256,21 +259,22 @@ class UpdateAttachmentsZipTool(BaseTool):
         param_zip_output = arcpy.Parameter(displayName="Zipped Results", name="zip_output", datatype="DEFile",
                                            parameterType="Derived", direction="Output")
 
-        params = [param_zip_input, param_attachment_id_field, param_template_mxd, param_zip_output]
+        params = [param_zip_input, param_map_name, param_attachment_id_field, param_template_mxd, param_zip_output]
         return params
 
     def tool_execute(self, parameters, messages):
         zip_input_file_path = parameters[0].valueAsText
-        attachment_id_field_name = parameters[1].valueAsText
-        template_mxd_path = parameters[2].valueAsText
+        map_name = parameters[1].valueAsText
+        attachment_id_field_name = parameters[2].valueAsText
+        template_mxd_path = parameters[3].valueAsText
 
         scratch_root_folder = self.create_scratch_folder()
         scratch_output_folder = self.create_folder(os.path.join(scratch_root_folder, "output"))
 
         scratch_working_folder = os.path.join(scratch_root_folder, "working")
-        output_folder = self.build_updated_template_output(zip_input_file_path, attachment_id_field_name,
-                                                           template_mxd_path, scratch_output_folder,
-                                                           scratch_working_folder)
+        output_folder, _ = self.build_updated_template_output(zip_input_file_path, map_name, attachment_id_field_name,
+                                                              template_mxd_path, scratch_output_folder,
+                                                              scratch_working_folder)
 
         scratch_zip_folder = self.create_scratch_folder()
         output_zip_file = self.zip_folder(output_folder, scratch_zip_folder, self.enfire_zip_name)
@@ -280,9 +284,9 @@ class UpdateAttachmentsZipTool(BaseTool):
         except arcpy.ExecuteError:
             arcpy.AddWarning("Unable to delete scratch workspace")
 
-        parameters[3].value = output_zip_file
+        parameters[4].value = output_zip_file
 
-    def build_updated_template_output(self, zip_input_file_path, attachment_id_field_name, template_mxd_path,
+    def build_updated_template_output(self, zip_input_file_path, map_name, attachment_id_field_name, template_mxd_path,
                                       output_folder, working_folder):
         original_workspace, attachments_folder = self.unzip_input(zip_input_file_path, working_folder)
         if not original_workspace or not attachments_folder:
@@ -295,14 +299,14 @@ class UpdateAttachmentsZipTool(BaseTool):
         update_attachments_tool = UpdateAttachmentsTool()
         update_attachments_tool.update_attachments(output_workspace, attachment_id_field_name, attachments_folder)
 
-        self.setup_template(template_mxd_path, output_folder)
+        output_mxd_path = self.setup_template(template_mxd_path, map_name, output_folder)
 
         try:
             arcpy.Delete_management(working_folder)
         except arcpy.ExecuteError:
             arcpy.AddWarning("Unable to delete scratch workspace")
 
-        return output_folder
+        return output_folder, output_mxd_path
 
     def unzip_input(self, zip_input_file_path, scratch_root_folder):
         scratch_folder = self.create_folder(os.path.join(scratch_root_folder, "unzip"))
@@ -357,9 +361,15 @@ class UpdateAttachmentsZipTool(BaseTool):
             return text[len(prefix):]
         return text
 
-    def setup_template(self, template_mxd_path, output_folder):
+    @staticmethod
+    def normalize_name(name):
+        normalized_name = name.replace(" ", "_")
+        return re.sub('[^A-Za-z0-9_]+', '', normalized_name)
+
+    def setup_template(self, template_mxd_path, map_name, output_folder):
         arcpy.AddMessage("Copying template to output folder")
-        output_template_mxd = os.path.join(output_folder, os.path.basename(template_mxd_path))
+        normalized_map_name = self.normalize_name(map_name)
+        output_template_mxd = os.path.join(output_folder, "{}.mxd".format(normalized_map_name))
         shutil.copy(template_mxd_path, output_template_mxd)
 
         mxd = arcpy.mapping.MapDocument(output_template_mxd)
@@ -407,6 +417,8 @@ class UpdateAttachmentsZipTool(BaseTool):
         mxd.save()
         del mxd
 
+        return output_template_mxd
+
     @staticmethod
     def update_group_layer_count(group_layer_list, layer):
         for group_layer in group_layer_list:
@@ -434,12 +446,73 @@ class UpdateAttachmentsZipTool(BaseTool):
         return folder
 
 
+class UpdateAttachmentsServerUploadTool(UpdateAttachmentsZipTool):
+    def __init__(self):
+        super(UpdateAttachmentsServerUploadTool, self).__init__()
+        self.label = "Update Attachments in a Zipped Folder and Uploads Service"
+        self.description = "Traverses zipped folders to update attachments for data in a workspace and uploads map"
+
+    def getParameterInfo(self):
+        """Define parameter definitions"""
+        param_zip_input = arcpy.Parameter(displayName="Zipped Folder", name="zip_input", datatype="DEFile",
+                                          parameterType="Required", direction="Input")
+        param_map_name = arcpy.Parameter(displayName="Map Name", name="map_name",
+                                         datatype="GPString", parameterType="Required", direction="Input")
+        param_summary = arcpy.Parameter(displayName="Service Summary", name="service_summary",
+                                        datatype="GPString", parameterType="Required", direction="Input")
+        param_tags = arcpy.Parameter(displayName="Service Tags", name="service_tags",
+                                     datatype="GPString", parameterType="Required", direction="Input")
+        param_attachment_id_field = arcpy.Parameter(displayName="Attachment ID Field", name="attachment_id_field",
+                                                    datatype="GPString", parameterType="Required", direction="Input")
+        param_template_mxd = arcpy.Parameter(displayName="Template Map Document", name="template_mxd",
+                                             datatype="DEMapDocument", parameterType="Required", direction="Input")
+        param_ags_connection = arcpy.Parameter(displayName="Template Map Document", name="template_mxd",
+                                               datatype="DEServerConnection", parameterType="Required",
+                                               direction="Input")
+
+        params = [param_zip_input, param_map_name, param_summary, param_tags, param_attachment_id_field,
+                  param_template_mxd, param_ags_connection]
+        return params
+
+    def tool_execute(self, parameters, messages):
+        zip_input_file_path = parameters[0].valueAsText
+        map_name = parameters[1].valueAsText
+        summary = parameters[2].valueAsText
+        tags = parameters[3].valueAsText
+        attachment_id_field_name = parameters[4].valueAsText
+        template_mxd_path = parameters[5].valueAsText
+        ags_connection = parameters[6].valueAsText
+
+        scratch_root_folder = self.create_scratch_folder()
+        scratch_output_folder = self.create_folder(os.path.join(scratch_root_folder, "output"))
+
+        scratch_working_folder = os.path.join(scratch_root_folder, "working")
+        output_folder, mxd_path = self.build_updated_template_output(zip_input_file_path, map_name,
+                                                                              attachment_id_field_name,
+                                                                              template_mxd_path, scratch_output_folder,
+                                                                              scratch_working_folder)
+
+        # try:
+        #     arcpy.Delete_management(scratch_root_folder)
+        # except arcpy.ExecuteError:
+        #     arcpy.AddWarning("Unable to delete scratch workspace")
+
+    def upload_map_service(self, mxd_path, service_name, summary, tags, ags_connection, working_folder):
+        mxd = arcpy.mapping.MapDocument(mxd_path)
+        working_folder = self.create_folder(working_folder)
+
+        arcpy.AddMessage("Creating Map Service Draft")
+        arcpy.mapping.CreateMapSDDraft(mxd, sd_draft, service_name, 'ARCGIS_SERVER', ags_connection, True, None, summary
+                                       , tags)
+
+
 if __name__ == "__main__":
     tool = UpdateAttachmentsZipTool()
     parameters = tool.getParameterInfo()
 
     parameters[0].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\ENFIRE_8_Camp_Grayling_MXD_GeoDB_attachments_6_27_2019.zip"
-    parameters[1].value = "GUID_PK"
-    parameters[2].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\template\ENFIRE_Template.mxd"
+    parameters[1].value = "Enfire Test Name 123!!"
+    parameters[2].value = "GUID_PK"
+    parameters[3].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\template\ENFIRE_Template.mxd"
 
     tool.execute(parameters, arcpy)
