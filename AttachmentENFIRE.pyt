@@ -438,8 +438,8 @@ if __name__ == "__main__":
     tool = UpdateAttachmentsZipTool()
     parameters = tool.getParameterInfo()
 
-    parameters[0].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\AngelScript\ENFIRE_8_Camp_Grayling_MXD_GeoDB_attachments_6_27_2019.zip"
+    parameters[0].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\ENFIRE_8_Camp_Grayling_MXD_GeoDB_attachments_6_27_2019.zip"
     parameters[1].value = "GUID_PK"
-    parameters[2].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\AngelScript\template\ENFIRE_Template.mxd"
+    parameters[2].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\template\ENFIRE_Template.mxd"
 
     tool.execute(parameters, arcpy)
