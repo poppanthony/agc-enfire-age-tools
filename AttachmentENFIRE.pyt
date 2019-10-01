@@ -13,6 +13,15 @@ import re
 from zipfile import ZipFile
 
 
+def winapi_path(dos_path, encoding=None):
+    if not isinstance(dos_path, unicode) and encoding is not None:
+        dos_path = dos_path.decode(encoding)
+    path = os.path.abspath(dos_path)
+    if path.startswith(u"\\\\"):
+        return u"\\\\?\\UNC\\" + path[2:]
+    return u"\\\\?\\" + path
+
+
 class Toolbox(object):
     def __init__(self):
         """Define the toolbox (the name of the toolbox is the name of the
@@ -212,7 +221,7 @@ class UpdateAttachmentsTool(BaseTool):
         for dataset_attachment_info in dataset_attachment_lookup.values():
             ds_name = dataset_attachment_info["name"]
             arcpy.AddMessage("Creating attachments for dataset {}".format(ds_name))
-            attachment_csv = os.path.join(scratch_folder, "{}.csv".format(ds_name))
+            attachment_csv = winapi_path(os.path.join(scratch_folder, "{}.csv".format(ds_name)))
             with open(attachment_csv, "w") as csv_file:
                 writer = csv.writer(csv_file, delimiter=",")
 
@@ -231,7 +240,7 @@ class UpdateAttachmentsTool(BaseTool):
                                             attachment_path_field_name, attachments_folder)
 
         try:
-            arcpy.Delete_management(scratch_folder)
+            arcpy.Delete_management(winapi_path(scratch_folder))
         except:
             arcpy.AddWarning("Unable to delete the scratch folder: {}".format(scratch_folder))
 
@@ -276,15 +285,15 @@ class UpdateAttachmentsZipTool(BaseTool):
                                                               template_mxd_path, scratch_output_folder,
                                                               scratch_working_folder)
 
-        scratch_zip_folder = self.create_scratch_folder()
+        scratch_zip_folder = self.create_scratch_folder(True)
         output_zip_file = self.zip_folder(output_folder, scratch_zip_folder, self.enfire_zip_name)
 
         try:
-            arcpy.Delete_management(scratch_root_folder)
+            arcpy.Delete_management(winapi_path(scratch_root_folder))
         except arcpy.ExecuteError:
             arcpy.AddWarning("Unable to delete scratch workspace")
 
-        parameters[4].value = output_zip_file
+        arcpy.SetParameterAsText(4, output_zip_file)
 
     def build_updated_template_output(self, zip_input_file_path, map_name, attachment_id_field_name, template_mxd_path,
                                       output_folder, working_folder):
@@ -293,7 +302,7 @@ class UpdateAttachmentsZipTool(BaseTool):
             raise RuntimeError("Unable to find workspace and/or attachments folder in zip file")
 
         arcpy.AddMessage("Copying original workspace to output folder for updates")
-        output_workspace = os.path.join(output_folder, self.enfire_output_workspace_name)
+        output_workspace = winapi_path(os.path.join(output_folder, self.enfire_output_workspace_name))
         arcpy.Copy_management(original_workspace, output_workspace)
 
         update_attachments_tool = UpdateAttachmentsTool()
@@ -302,17 +311,17 @@ class UpdateAttachmentsZipTool(BaseTool):
         output_mxd_path = self.setup_template(template_mxd_path, map_name, output_folder)
 
         try:
-            arcpy.Delete_management(working_folder)
+            arcpy.Delete_management(winapi_path(working_folder))
         except arcpy.ExecuteError:
             arcpy.AddWarning("Unable to delete scratch workspace")
 
         return output_folder, output_mxd_path
 
     def unzip_input(self, zip_input_file_path, scratch_root_folder):
-        scratch_folder = self.create_folder(os.path.join(scratch_root_folder, "unzip"))
+        scratch_folder = winapi_path(self.create_folder(os.path.join(scratch_root_folder, "unzip")))
 
         arcpy.AddMessage("Unzipping the input zip file: {}".format(os.path.basename(zip_input_file_path)))
-        with ZipFile(zip_input_file_path, 'r') as zip_file:
+        with ZipFile(winapi_path(zip_input_file_path), 'r') as zip_file:
             zip_file.extractall(scratch_folder)
 
         for path, subdirs, files in os.walk(scratch_folder, topdown=True):
@@ -329,7 +338,7 @@ class UpdateAttachmentsZipTool(BaseTool):
                     arcpy.AddMessage("Found workspace {} and attachment folder {}".format(os.path.basename(workspace_path), os.path.basename(workspace_dir)))
                     return workspace_path, workspace_dir
 
-        return None, None, None
+        return None, None
 
     @staticmethod
     def get_all_file_paths(folder_path):
@@ -347,11 +356,11 @@ class UpdateAttachmentsZipTool(BaseTool):
         files_to_zip = self.get_all_file_paths(zip_folder)
 
         arcpy.AddMessage("Zipping files")
-        output_zip_file = os.path.join(output_folder, zip_name)
+        output_zip_file = winapi_path(os.path.join(output_folder, zip_name))
         with ZipFile(output_zip_file, 'w') as zip_file:
             for file_path in files_to_zip:
                 zip_file_path = self.remove_prefix(file_path, zip_folder)
-                zip_file.write(file_path, zip_file_path)
+                zip_file.write(winapi_path(file_path), zip_file_path)
 
         return output_zip_file
 
@@ -369,7 +378,7 @@ class UpdateAttachmentsZipTool(BaseTool):
     def setup_template(self, template_mxd_path, map_name, output_folder):
         arcpy.AddMessage("Copying template to output folder")
         normalized_map_name = self.normalize_name(map_name)
-        output_template_mxd = os.path.join(output_folder, "{}.mxd".format(normalized_map_name))
+        output_template_mxd = winapi_path(os.path.join(output_folder, "{}.mxd".format(normalized_map_name)))
         shutil.copy(template_mxd_path, output_template_mxd)
 
         mxd = arcpy.mapping.MapDocument(output_template_mxd)
@@ -431,17 +440,25 @@ class UpdateAttachmentsZipTool(BaseTool):
             if layer_name.startswith(group_layer_name):
                 group_layer["count"] = group_layer["count"] + 1
 
-    def create_scratch_folder(self):
-        scratch_folder = os.path.join(arcpy.env.scratchFolder, str(uuid.uuid4()))
-        return self.create_folder(scratch_folder)
+    def create_scratch_folder(self, root=False):
+        if root:
+            scratch_folder = arcpy.env.scratchFolder
+            if not os.path.exists(scratch_folder):
+                return self.create_folder(scratch_folder)
+
+            return scratch_folder
+        else:
+            scratch_folder = os.path.join(arcpy.env.scratchFolder, str(uuid.uuid4()))
+            return self.create_folder(scratch_folder)
 
     @staticmethod
     def create_folder(folder):
-        if os.path.exists(folder):
-            arcpy.Delete_management(folder)
+        folder_path = winapi_path(folder)
+        if os.path.exists(folder_path):
+            arcpy.Delete_management(folder_path)
 
         arcpy.AddMessage("Creating folder for temporary work: {}".format(folder))
-        os.makedirs(folder)
+        os.makedirs(folder_path)
 
         return folder
 
@@ -502,17 +519,16 @@ class UpdateAttachmentsServerUploadTool(UpdateAttachmentsZipTool):
         working_folder = self.create_folder(working_folder)
 
         arcpy.AddMessage("Creating Map Service Draft")
-        arcpy.mapping.CreateMapSDDraft(mxd, sd_draft, service_name, 'ARCGIS_SERVER', ags_connection, True, None, summary
-                                       , tags)
+        #arcpy.mapping.CreateMapSDDraft(mxd, sd_draft, service_name, 'ARCGIS_SERVER', ags_connection, True, None, summary, tags)
 
 
 if __name__ == "__main__":
     tool = UpdateAttachmentsZipTool()
     parameters = tool.getParameterInfo()
 
-    parameters[0].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\ENFIRE_8_Camp_Grayling_MXD_GeoDB_attachments_6_27_2019.zip"
+    parameters[0].value = r"C:\Projects\AGCTDM\Source\GitHub\agc-enfire-age-tools\ENFIRE_8_Camp_Grayling_MXD_GeoDB_attachments_6_27_2019.zip"
     parameters[1].value = "Enfire Test Name 123!!"
     parameters[2].value = "GUID_PK"
-    parameters[3].value = r"C:\Users\RDAGCAFP\Documents\ArcGIS\Projects\EnfireAGETools\template\ENFIRE_Template.mxd"
+    parameters[3].value = r"C:\Projects\AGCTDM\Source\GitHub\agc-enfire-age-tools\template\ENFIRE_Template.mxd"
 
     tool.execute(parameters, arcpy)
