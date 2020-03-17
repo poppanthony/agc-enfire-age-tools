@@ -308,7 +308,7 @@ class UpdateAttachmentsZipTool(BaseTool):
         update_attachments_tool = UpdateAttachmentsTool()
         update_attachments_tool.update_attachments(output_workspace, attachment_id_field_name, attachments_folder)
 
-        output_mxd_path = self.setup_template(template_mxd_path, map_name, output_folder)
+        output_mxd_path = self.setup_template(template_mxd_path, map_name, output_folder, output_workspace)
 
         try:
             arcpy.Delete_management(winapi_path(working_folder))
@@ -375,13 +375,27 @@ class UpdateAttachmentsZipTool(BaseTool):
         normalized_name = name.replace(" ", "_")
         return re.sub('[^A-Za-z0-9_]+', '', normalized_name)
 
-    def setup_template(self, template_mxd_path, map_name, output_folder):
+    def setup_template(self, template_mxd_path, map_name, output_folder, output_workspace):
         arcpy.AddMessage("Copying template to output folder")
         normalized_map_name = self.normalize_name(map_name)
         output_template_mxd = winapi_path(os.path.join(output_folder, "{}.mxd".format(normalized_map_name)))
         shutil.copy(template_mxd_path, output_template_mxd)
 
         mxd = arcpy.mapping.MapDocument(output_template_mxd)
+
+        arcpy.AddMessage("Fixing any broken data sources in the map document")
+        broken_data_source_layer_list = arcpy.mapping.ListBrokenDataSources(mxd)
+        broken_workspaces_list = []
+        for broken_data_source_layer in broken_data_source_layer_list:
+            if not broken_data_source_layer.workspacePath:
+                continue
+            if broken_data_source_layer.workspacePath in broken_workspaces_list:
+                continue
+            broken_workspaces_list.append(broken_data_source_layer.workspacePath)
+
+        for broken_workspace in broken_workspaces_list:
+            arcpy.AddMessage("Found broken workspace path. Fixing")
+            mxd.findAndReplaceWorkspacePaths(broken_workspace, output_workspace)
 
         arcpy.AddMessage("Removing empty feature and group layers from the map document")
         zoom_extent = None
@@ -397,6 +411,7 @@ class UpdateAttachmentsZipTool(BaseTool):
 
                 layer_count = int(arcpy.GetCount_management(layer).getOutput(0))
                 if layer_count > 0:
+                    arcpy.AddMessage("Found {} feature(s) in feature layer {}".format(layer_count, layer.name))
                     layer_polygon = layer.getExtent(False).polygon
                     if not zoom_extent:
                         zoom_extent = layer_polygon
@@ -422,6 +437,8 @@ class UpdateAttachmentsZipTool(BaseTool):
             arcpy.AddMessage("Zooming map to data extent")
             data_frame = arcpy.mapping.ListDataFrames(mxd)[0]
             data_frame.extent = zoom_extent.extent
+        else:
+            arcpy.AddWarning("No data extent found for uploaded ENFIRE file")
 
         mxd.save()
         del mxd
